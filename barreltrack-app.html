@@ -309,23 +309,23 @@ select:focus,input:focus{border-color:var(--gold-l);}
     <div class="card card-gold">
       <div class="f4">
         <div><label>Warehouse</label>
-          <select id="dZone" onchange="autoHeightSuggest()">
+          <select id="dZone" onchange="updateDestPreview()">
             <option>D6</option><option>D7</option><option>D8</option>
           </select>
         </div>
         <div><label>Row</label>
-          <select id="dRow" onchange="autoHeightSuggest()">
+          <select id="dRow" onchange="updateDestPreview()">
             <option>A</option><option>B</option><option>C</option><option>D</option><option>E</option><option>F</option><option>G</option><option>H</option><option>I</option><option>J</option><option>K</option><option>L</option><option>M</option><option>N</option><option>O</option><option>P</option><option>Q</option><option>R</option><option>S</option><option>T</option><option>U</option><option>V</option><option>W</option><option>X</option><option>Y</option><option>Z</option>
           </select>
         </div>
         <div><label>Depth</label>
-          <select id="dPallet" onchange="autoHeightSuggest()">
+          <select id="dPallet" onchange="updateDestPreview()">
             <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
             <option>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
             <option>11</option><option>12</option>
           </select>
         </div>
-        <div><label>Height (A–D)</label>
+        <div><label>Height</label>
           <select id="dSlot" onchange="updateDestPreview()">
             <option>A</option><option>B</option><option>C</option><option>D</option>
           </select>
@@ -723,8 +723,9 @@ let moveBarrel   = null;
 let palletFilter = 'all';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function locStr(b){ return b.zone?`WH-${b.zone} · Row ${b.row} · Depth ${b.pallet} · Height ${b.slot}`:'Unassigned'; }
-function locShort(b){ return b.zone?`WH${b.zone}-R${b.row}-D${b.pallet}-H${b.slot}`:'UNASSIGNED'; }
+// Location format: D6-A-1-A  (Warehouse-Row-Depth-Height, no extra letters)
+function locStr(b){ return b.zone?`${b.zone}-${b.row}-${b.pallet}-${b.slot}`:'Unassigned'; }
+function locShort(b){ return b.zone?`${b.zone}-${b.row}-${b.pallet}-${b.slot}`:'UNASSIGNED'; }
 function tsNow(){ return new Date().toISOString(); }
 function fmtTs(ts){ const d=new Date(ts); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false}); }
 function pillFor(s){ return {Aging:'pill-aging',Ready:'pill-ready',Shipped:'pill-shipped',Empty:'pill-empty'}[s]||'pill-empty'; }
@@ -734,34 +735,16 @@ function getOperator(){
   return v||'UNSET';
 }
 
-function checkOccupied(z,r,p,s,ex=null){
-  if(!z)return null;
-  return barrels.find(b=>b.zone===z&&b.row===String(r)&&b.pallet===String(p)&&b.slot===String(s)&&b.id!==ex)||null;
-}
+const MAX_PER_LOCATION = 4; // max 53-gal barrels per location (e.g. D6-A-1-A)
 
-// Returns all barrels sharing the same Warehouse+Row+Depth position (up to 4, one per Height A–D)
-function getLocationOccupants(z,r,p,ex=null){
-  if(!z)return[];
-  return barrels.filter(b=>b.zone===z&&b.row===String(r)&&b.pallet===String(p)&&(ex===null||b.id!==ex));
-}
-
-const HEIGHTS=['A','B','C','D'];
-
-// When Warehouse, Row, or Depth changes: auto-advance Height to the first free slot.
-// This prevents workers from landing on an occupied height and having to manually pick.
-function autoHeightSuggest(){
-  if(!moveBarrel){ updateDestPreview(); return; }
-  const z=document.getElementById('dZone').value;
-  const r=document.getElementById('dRow').value;
-  const p=document.getElementById('dPallet').value;
-  const currentH=document.getElementById('dSlot').value;
-  const taken=new Set(getLocationOccupants(z,r,p,moveBarrel.id).map(b=>b.slot));
-  // Only auto-advance if the currently selected height is already occupied
-  if(taken.has(currentH)){
-    const free=HEIGHTS.find(h=>!taken.has(h));
-    if(free) document.getElementById('dSlot').value=free;
-  }
-  updateDestPreview();
+// Returns all barrels at the EXACT same 4-coordinate location, excluding barrel `ex`.
+// Multiple barrels share one location; capacity is MAX_PER_LOCATION.
+function getExactLocationBarrels(z,r,p,s,ex=null){
+  if(!z) return [];
+  return barrels.filter(b=>
+    b.zone===z && b.row===String(r) && b.pallet===String(p) && b.slot===String(s) &&
+    (ex===null || b.id!==ex)
+  );
 }
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
@@ -793,6 +776,16 @@ function loadDemo(id){document.getElementById('scanInput').value=id;doScan();}
 function renderScanCard(b){
   const locAssigned=!!b.zone;
   const locBg=locAssigned?'':'background:rgba(176,48,32,0.07);border-color:rgba(176,48,32,0.25);';
+  // Co-tenants: other barrels sharing the exact same location
+  const coTenants=locAssigned
+    ? barrels.filter(x=>x.zone===b.zone&&x.row===b.row&&x.pallet===b.pallet&&x.slot===b.slot&&x.id!==b.id)
+    : [];
+  const totalHere=coTenants.length+1;
+  const locSub=locAssigned
+    ? (coTenants.length>0
+        ? `${totalHere}/${MAX_PER_LOCATION} barrels at this location`
+        : 'Tap Move to relocate')
+    : '';
   document.getElementById('scanResult').innerHTML=`
     <div class="bc highlight">
       <div class="bc-hdr">
@@ -815,11 +808,11 @@ function renderScanCard(b){
           <span class="loc-icon">${locAssigned?'📦':'⚠️'}</span>
           <div>
             <div class="loc-val" style="${locAssigned?'':'color:var(--red);font-size:12px;'}">${locStr(b)}</div>
-            ${locAssigned?`<div class="loc-sub">Depth ${b.pallet} · Height ${b.slot}</div>`:'<div class="loc-sub" style="color:rgba(176,48,32,0.7);">Use Move tab to assign a warehouse position</div>'}
+            <div class="loc-sub" style="${locAssigned?'':'color:rgba(176,48,32,0.7);'}">${locAssigned?locSub:'Use Move tab to assign a warehouse position'}</div>
           </div>
         </div>
       </div>
-      ${renderRackMini(b)}
+      ${renderRackMini(b,coTenants)}
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-gold btn-sm" onclick="sendToMove('${b.id}')">${locAssigned?'📍 Move Barrel':'📍 Assign Location'}</button>
         <button class="btn btn-outline btn-sm" onclick="showTab('history',document.querySelectorAll('.tab')[3])">History</button>
@@ -827,25 +820,32 @@ function renderScanCard(b){
     </div>`;
 }
 
-// Renders a 4-slot rack diagram showing all barrels at the same Warehouse+Row+Depth position
-function renderRackMini(b){
-  if(!b.zone) return '';
-  const at=barrels.filter(x=>x.zone===b.zone&&x.row===b.row&&x.pallet===b.pallet);
-  if(at.length<2) return ''; // only show when more than one barrel shares this position
-  const slots=HEIGHTS.map(h=>{
-    const bx=at.find(x=>x.slot===h);
+// Shows all barrels sharing the exact same location as b (up to MAX_PER_LOCATION).
+// coTenants is pre-computed by renderScanCard so we don't re-filter barrels twice.
+function renderRackMini(b, coTenants){
+  if(!b.zone || !coTenants || coTenants.length===0) return '';
+  // All occupants = this barrel + its co-tenants, sorted by id for stable order
+  const all=[b,...coTenants].sort((x,y)=>x.id.localeCompare(y.id));
+  const slots=[];
+  for(let i=0;i<MAX_PER_LOCATION;i++){
+    const bx=all[i]||null;
     const isSelf=bx&&bx.id===b.id;
-    const bg=bx?(isSelf?'rgba(201,146,42,0.18)':'var(--surf2)'):'var(--bg)';
-    const border=bx?(isSelf?'var(--gold-l)':'var(--border-l)'):'var(--border)';
-    const borderStyle=bx?'solid':'dashed';
-    return `<div style="flex:1;background:${bg};border:1px ${borderStyle} ${border};border-radius:5px;padding:6px 4px;text-align:center;min-height:52px;display:flex;flex-direction:column;justify-content:center;gap:2px;">
-      <div style="font-size:9px;color:var(--cream-dd);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:0.5px;">H${h}</div>
-      ${bx?`<div style="font-size:10px;font-family:'DM Mono',monospace;color:${isSelf?'var(--gold-d)':'var(--cream)'};font-weight:600;word-break:break-all;line-height:1.2;">${bx.id}</div><div style="font-size:9px;color:var(--cream-dd);margin-top:1px;">${bx.recipe?bx.recipe.substring(0,10):'—'}</div>`:'<div style="font-size:9px;color:var(--border-l);">empty</div>'}
-    </div>`;
-  }).join('');
+    if(bx){
+      slots.push(`<div style="flex:1;min-width:0;background:${isSelf?'rgba(201,146,42,0.18)':'var(--surf2)'};border:1px solid ${isSelf?'var(--gold-l)':'var(--border-l)'};border-radius:5px;padding:6px 4px;text-align:center;min-height:54px;display:flex;flex-direction:column;justify-content:center;gap:2px;">
+        <div style="font-size:9px;color:var(--cream-dd);font-family:'DM Mono',monospace;">#${i+1}</div>
+        <div style="font-size:10px;font-family:'DM Mono',monospace;color:${isSelf?'var(--gold-d)':'var(--cream)'};font-weight:600;word-break:break-all;line-height:1.2;">${bx.id}</div>
+        <div style="font-size:9px;color:var(--cream-dd);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${bx.recipe?bx.recipe.substring(0,11):'—'}</div>
+      </div>`);
+    } else {
+      slots.push(`<div style="flex:1;background:var(--bg);border:1px dashed var(--border);border-radius:5px;padding:6px 4px;text-align:center;min-height:54px;display:flex;flex-direction:column;justify-content:center;">
+        <div style="font-size:9px;color:var(--border-l);">#${i+1}</div>
+        <div style="font-size:9px;color:var(--border-l);margin-top:2px;">empty</div>
+      </div>`);
+    }
+  }
   return `<div style="margin-bottom:10px;">
-    <div style="font-size:9px;color:var(--cream-dd);text-transform:uppercase;letter-spacing:1.5px;font-family:'DM Mono',monospace;margin-bottom:5px;">📦 Rack Position · ${at.length}/4 slots filled</div>
-    <div style="display:flex;gap:4px;">${slots}</div>
+    <div style="font-size:9px;color:var(--cream-dd);text-transform:uppercase;letter-spacing:1.5px;font-family:'DM Mono',monospace;margin-bottom:5px;">📦 ${locStr(b)} · ${all.length}/${MAX_PER_LOCATION} barrels stored here</div>
+    <div style="display:flex;gap:4px;">${slots.join('')}</div>
   </div>`;
 }
 
@@ -880,66 +880,65 @@ function loadMoveBarrel(){
   document.getElementById('dSlot').value=moveBarrel.slot||'A';
   document.getElementById('fromDisplay').textContent=locShort(moveBarrel);
   form.style.display='block';
-  autoHeightSuggest();
+  updateDestPreview();
 }
 
 function updateDestPreview(){
-  if(!moveBarrel)return;
-  const z=document.getElementById('dZone').value,r=document.getElementById('dRow').value,
-        p=document.getElementById('dPallet').value,s=document.getElementById('dSlot').value;
-  document.getElementById('toDisplay').textContent=`WH${z}-R${r}-D${p}-H${s}`;
+  if(!moveBarrel) return;
+  const z=document.getElementById('dZone').value,
+        r=document.getElementById('dRow').value,
+        p=document.getElementById('dPallet').value,
+        s=document.getElementById('dSlot').value;
+  const locKey=`${z}-${r}-${p}-${s}`;
+  document.getElementById('toDisplay').textContent=locKey;
   const cz=document.getElementById('conflictZone');
   const btn=document.getElementById('confirmMoveBtn');
-  const occ=checkOccupied(z,r,p,s,moveBarrel.id);
-  const allAtLoc=getLocationOccupants(z,r,p,moveBarrel.id);
-  const takenHeights=new Set(allAtLoc.map(b=>b.slot));
-  const freeHeights=HEIGHTS.filter(h=>!takenHeights.has(h));
 
-  if(!occ){
-    // Slot is free — show occupancy info if others are here
-    if(allAtLoc.length>0){
-      const rows=allAtLoc.map(b=>`<div style="display:flex;justify-content:space-between;font-size:11px;font-family:'DM Mono',monospace;padding:2px 0;"><span style="color:var(--cream-dd);">H${b.slot}</span><span style="color:var(--cream);font-weight:500;">${b.id}</span><span style="color:var(--cream-dd);font-size:10px;">${b.recipe||'—'}</span></div>`).join('');
+  // All barrels already at this exact location (excluding the barrel being moved)
+  const here=getExactLocationBarrels(z,r,p,s,moveBarrel.id);
+  const count=here.length;
+
+  if(count < MAX_PER_LOCATION){
+    // Room available — show who's already here if any
+    if(count > 0){
+      const rows=here.map(b=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:11px;border-bottom:1px solid rgba(212,197,169,0.3);">
+          <span style="font-family:'DM Mono',monospace;color:var(--cream);font-weight:500;">${b.id}</span>
+          <span style="color:var(--cream-dd);font-size:10px;">${b.recipe||'—'}</span>
+          <span style="color:var(--cream-dd);font-size:10px;">${b.proof?b.proof+' proof':''}</span>
+        </div>`).join('');
       cz.innerHTML=`
         <div style="background:var(--gold-bg);border:1px solid rgba(168,114,26,0.2);border-radius:6px;padding:9px 10px;margin-bottom:10px;">
-          <div style="font-size:9px;color:var(--gold-d);text-transform:uppercase;letter-spacing:1px;font-family:'DM Mono',monospace;margin-bottom:6px;">📦 ${allAtLoc.length}/4 slots filled at this position — H${s} is free</div>
+          <div style="font-size:9px;color:var(--gold-d);text-transform:uppercase;letter-spacing:1px;font-family:'DM Mono',monospace;margin-bottom:6px;">
+            📦 ${locKey} · ${count}/${MAX_PER_LOCATION} barrels — adding as #${count+1}
+          </div>
           ${rows}
         </div>`;
     } else {
       cz.innerHTML='';
     }
     btn.disabled=false;
-    btn.textContent='Confirm Move & Sync ↗';
-    btn.className='btn btn-success btn-full';btn.onclick=confirmMove;
-
-  } else if(freeHeights.length>0){
-    // This height is taken but other slots are free — show quick-select
-    const quickBtns=freeHeights.map(h=>`<button class="btn btn-outline btn-xs" onclick="document.getElementById('dSlot').value='${h}';updateDestPreview()">Height ${h}</button>`).join('');
-    const rows=allAtLoc.map(b=>`<div style="display:flex;justify-content:space-between;font-size:11px;font-family:'DM Mono',monospace;padding:2px 0;"><span style="color:${b.slot===s?'var(--red)':'var(--cream-dd)'};">H${b.slot}${b.slot===s?' ✕':''}</span><span style="color:var(--cream);font-weight:500;">${b.id}</span></div>`).join('');
-    cz.innerHTML=`
-      <div class="conflict-alert">
-        <div class="ca-title">⚠️ Height ${s} Occupied by ${occ.id}</div>
-        <div class="ca-desc" style="margin-bottom:8px;">${freeHeights.length} of 4 height slot${freeHeights.length>1?'s':''} still available — tap to select:</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">${quickBtns}</div>
-        <div style="background:rgba(176,48,32,0.05);border-radius:4px;padding:6px 8px;">${rows}</div>
-      </div>`;
-    btn.disabled=true;btn.textContent='Select a free height slot above';
-    btn.className='btn btn-outline btn-full';btn.onclick=null;
-
+    btn.textContent=count>0?`Add as Barrel ${count+1}/${MAX_PER_LOCATION} & Sync ↗`:'Confirm Move & Sync ↗';
+    btn.className='btn btn-success btn-full';
+    btn.onclick=confirmMove;
   } else {
-    // All 4 slots full — offer swap only
+    // Location full — list all 4 occupants, tell user to pick another spot
+    const rows=here.map((b,i)=>`
+      <div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:11px;border-bottom:1px solid rgba(212,197,169,0.3);">
+        <span style="color:var(--cream-dd);font-family:'DM Mono',monospace;min-width:14px;">${i+1}</span>
+        <span style="font-family:'DM Mono',monospace;color:var(--cream);font-weight:500;">${b.id}</span>
+        <span style="color:var(--cream-dd);font-size:10px;">${b.recipe||'—'}</span>
+      </div>`).join('');
     cz.innerHTML=`
       <div class="conflict-alert">
-        <div class="ca-title">⚠️ Position Full (4/4 slots occupied)</div>
-        <div class="ca-desc"><span class="ca-barrel">${occ.id}</span> is at Height ${s}. All height slots at WH-${z} · Row ${r} · Depth ${p} are taken.</div>
-        <div class="swap-offer">
-          <p>💡 Swap instead — both barrels exchange positions atomically.</p>
-          <button class="btn btn-full btn-sm" style="background:var(--gold);color:#0D0A04;" onclick="doSwap('${moveBarrel.id}','${occ.id}')">
-            Swap ${moveBarrel.id} ↔ ${occ.id}
-          </button>
-        </div>
+        <div class="ca-title">⚠️ Location Full — ${MAX_PER_LOCATION}/${MAX_PER_LOCATION} Barrels at ${locKey}</div>
+        <div style="padding:4px 0 8px;">${rows}</div>
+        <div class="ca-desc">Choose a different Warehouse, Row, Depth, or Height.</div>
       </div>`;
-    btn.disabled=true;btn.textContent='Select an empty position';
-    btn.className='btn btn-outline btn-full';btn.onclick=null;
+    btn.disabled=true;
+    btn.textContent='Location Full — Choose Another';
+    btn.className='btn btn-outline btn-full';
+    btn.onclick=null;
   }
 }
 
@@ -952,10 +951,12 @@ async function confirmMove(){
   if(!isAuthed()){showNotif('err','Not signed in — tap Sign In');return;}
   const z=document.getElementById('dZone').value,r=document.getElementById('dRow').value,
         p=document.getElementById('dPallet').value,s=document.getElementById('dSlot').value;
-  const occ=checkOccupied(z,r,p,s,moveBarrel.id);
-  if(occ){showNotif('err','Position now occupied');updateDestPreview();return;}
+  // Re-check capacity at commit time (another user may have filled it since last preview)
+  if(getExactLocationBarrels(z,r,p,s,moveBarrel.id).length >= MAX_PER_LOCATION){
+    showNotif('err','Location now full — choose another');updateDestPreview();return;
+  }
   if(z===moveBarrel.zone&&r===moveBarrel.row&&p===moveBarrel.pallet&&s===moveBarrel.slot){
-    showNotif('warn','Already at this position');return;
+    showNotif('warn','Barrel is already at this location');return;
   }
   const fromLoc=locStr(moveBarrel);
   const btn=document.getElementById('confirmMoveBtn');
@@ -991,9 +992,10 @@ By:      ${getOperator()}</div>
     // Roll back local cache on failure
     if(moveBarrel){
       const b=barrels.find(x=>x.id===moveBarrel.id);
-      if(b){ const parts=fromLoc.replace('WH-','').split(' · ');
-        b.zone=parts[0]; b.row=(parts[1]||'').replace('Row ','');
-        b.pallet=(parts[2]||'').replace('Depth ',''); b.slot=(parts[3]||'').replace('Height ','');
+      if(b && fromLoc!=='Unassigned'){
+        // format is "D6-A-1-A" — split on first three dashes only
+        const m=fromLoc.match(/^([^-]+)-([^-]+)-([^-]+)-([^-]+)$/);
+        if(m){ b.zone=m[1]; b.row=m[2]; b.pallet=m[3]; b.slot=m[4]; }
       }
     }
     showNotif('err','Save failed: '+err.message);
